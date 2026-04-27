@@ -6,10 +6,11 @@ Structural Mapping
 - Inserts summary table of all that was done.
 """
 
-from tools.notebook import (create_notebook, 
-                            insert_cell, 
-                            read_notebook, 
-                            insert_cells_batch)
+from tools.notebook import (create_notebook,
+                            insert_cell,
+                            read_notebook,
+                            insert_cells_batch,
+                            find_dataframe_cells)
 from pathlib import Path
 from collections import defaultdict
 import openpyxl
@@ -138,139 +139,7 @@ def scan(url: str, notebook_path: str) -> None:
     code = _generate_code(url, files_by_type)
 
     create_notebook(notebook_path)
-    insert_cell(notebook_path, code, cell_type="code")  
-
-def find_dataframe_cells(nb: dict) -> list[tuple[int, str]]:
-    """Find cells with DataFrame definitions using AST parsing."""
-    results = []
-
-    for i, cell in enumerate(nb.get("cells", [])):
-        if cell.get("cell_type") != "code":
-            continue
-
-        source = "".join(cell.get("source", []))
-        if not source.strip():
-            continue
-
-        try:
-            tree = ast.parse(source)
-            df_names = _extract_dataframe_names(tree)
-            for name in df_names:
-                results.append((i, name))
-        except SyntaxError:
-            # If AST parsing fails, fall back to pattern matching
-            df_names = _pattern_match_dataframes(source)
-            for name in df_names:
-                results.append((i, name))
-
-    return results
-
-
-def _extract_dataframe_names(tree: ast.AST) -> list[str]:
-    """Extract variable names that are likely DataFrames from AST."""
-    df_names = []
-
-    for node in ast.walk(tree):
-        # Look for assignments: x = pd.read_csv(...)
-        if isinstance(node, ast.Assign):
-            # Check if right side is a pandas read function
-            if _is_pandas_read_call(node.value):
-                for target in node.targets:
-                    if isinstance(target, ast.Name):
-                        df_names.append(target.id)
-
-            # Check if right side is DataFrame constructor
-            elif _is_dataframe_constructor(node.value):
-                for target in node.targets:
-                    if isinstance(target, ast.Name):
-                        df_names.append(target.id)
-
-            # Check for DataFrame operations that return DataFrames
-            elif _is_dataframe_operation(node.value):
-                for target in node.targets:
-                    if isinstance(target, ast.Name):
-                        df_names.append(target.id)
-
-    return df_names
-
-
-def _is_pandas_read_call(node: ast.AST) -> bool:
-    """Check if node is a pandas read_* call."""
-    if not isinstance(node, ast.Call):
-        return False
-
-    # pd.read_csv, pd.read_excel, etc.
-    if isinstance(node.func, ast.Attribute):
-        if isinstance(node.func.value, ast.Name):
-            if node.func.value.id == "pd" and node.func.attr.startswith("read_"):
-                return True
-
-    return False
-
-
-def _is_dataframe_constructor(node: ast.AST) -> bool:
-    """Check if node is a DataFrame constructor call."""
-    if not isinstance(node, ast.Call):
-        return False
-
-    # pd.DataFrame(...)
-    if isinstance(node.func, ast.Attribute):
-        if isinstance(node.func.value, ast.Name):
-            if node.func.value.id == "pd" and node.func.attr == "DataFrame":
-                return True
-
-    # pandas.DataFrame(...)
-    if isinstance(node.func, ast.Attribute):
-        if isinstance(node.func.value, ast.Name):
-            if node.func.value.id == "pandas" and node.func.attr == "DataFrame":
-                return True
-
-    return False
-
-
-def _is_dataframe_operation(node: ast.AST) -> bool:
-    """Check if node is a DataFrame operation that returns a DataFrame."""
-    if not isinstance(node, ast.Call):
-        return False
-
-    # Common DataFrame methods that return DataFrames
-    df_methods = {
-        'merge', 'join', 'concat', 'groupby', 'pivot', 'pivot_table',
-        'drop', 'dropna', 'fillna', 'reset_index', 'set_index',
-        'sort_values', 'sort_index', 'query', 'copy', 'sample',
-        'head', 'tail', 'iloc', 'loc', 'filter', 'assign'
-    }
-
-    if isinstance(node.func, ast.Attribute):
-        if node.func.attr in df_methods:
-            return True
-
-    # pd.concat, pd.merge
-    if isinstance(node.func, ast.Attribute):
-        if isinstance(node.func.value, ast.Name):
-            if node.func.value.id == "pd" and node.func.attr in {'concat', 'merge'}:
-                return True
-
-    return False
-
-
-def _pattern_match_dataframes(source: str) -> list[str]:
-    """Fallback: use regex patterns to find likely DataFrame assignments."""
-    import re
-
-    patterns = [
-        r'(\w+)\s*=\s*pd\.read_\w+\(',
-        r'(\w+)\s*=\s*pd\.DataFrame\(',
-        r'(\w+)\s*=\s*pandas\.read_\w+\(',
-        r'(\w+)\s*=\s*pandas\.DataFrame\(',
-    ]
-
-    names = []
-    for pattern in patterns:
-        matches = re.findall(pattern, source)
-        names.extend(matches)
-
-    return list(set(names))
+    insert_cell(notebook_path, code, cell_type="code")
 
 import textwrap
 
@@ -341,17 +210,6 @@ def profile_dataframe(notebook_path: str, df_name: str = None) -> None:
     # SINGLE save operation - much safer!
     insert_cells_batch(notebook_path, cells_to_insert)
     print(f"✓ Added {len(cells_to_insert)} profile cells")
-
-import sys
-import subprocess
-sys.path.insert(0, '/Users/muhammadmuhdhar/Downloads/repo/nb-smith/src')
-from tools.notebook import get_nb_path, require_nb, read_notebook, insert_cell, find_dataframe_cells, insert_cells_batch
-
-from tools.notebook import create_notebook, insert_cell
-from pathlib import Path
-from collections import defaultdict
-import openpyxl
-
 
 
 def _parse_info_output(output_text: str) -> dict:
@@ -559,64 +417,8 @@ def _infer_from_metadata(metadata: dict) -> tuple:
     return dict(findings), normalization_needed, dict(column_names_across_dfs)
 
 
-def _generate_fix_code(findings: dict, normalization_needed: dict, df_names: list[str]) -> list[str]:
-    """Generate fix code cells (no analysis, just fixes)."""
-    cells = []
-
-    # Cell 1: Normalization
-    if normalization_needed:
-        norm_lines = ["# Apply Column Name Normalization\n"]
-        for df_name, renames in normalization_needed.items():
-            rename_dict = str(renames).replace("'", '"')
-            norm_lines.append(f"{df_name}.rename(columns={rename_dict}, inplace=True)")
-        norm_lines.append(f"\nprint('Normalized column names in {len(normalization_needed)} DataFrames')")
-        cells.append('\n'.join(norm_lines))
-
-    # Cell 2: Type conversions
-    if findings:
-        conv_lines = ["# Apply Type Conversions\n"]
-        for df_name, columns in findings.items():
-            for col, info in columns.items():
-                issue = info['issue']
-
-                if issue == 'date_as_string':
-                    conv_lines.append(f"{df_name}['{col}'] = pd.to_datetime({df_name}['{col}'], errors='coerce')")
-
-                elif issue == 'numeric_as_string':
-                    conv_lines.append(f"# Remove common characters before conversion")
-                    conv_lines.append(f"_cleaned = {df_name}['{col}'].astype(str).str.replace('[,$%]', '', regex=True)")
-                    conv_lines.append(f"{df_name}['{col}'] = pd.to_numeric(_cleaned, errors='coerce')")
-
-                elif issue == 'boolean_as_string':
-                    conv_lines.append(f"_bool_map = {{'true': True, 'false': False, 'yes': True, 'no': False, 'y': True, 'n': False, '1': True, '0': False, 't': True, 'f': False}}")
-                    conv_lines.append(f"{df_name}['{col}'] = {df_name}['{col}'].astype(str).str.lower().map(_bool_map)")
-
-                elif issue == 'should_be_categorical':
-                    conv_lines.append(f"{df_name}['{col}'] = {df_name}['{col}'].astype('category')")
-
-                elif issue == 'identifier_column':
-                    conv_lines.append(f"# {df_name}['{col}'] identified as ID column - no conversion needed")
-
-        conv_lines.append(f"\nprint('Applied type conversions')")
-        cells.append('\n'.join(conv_lines))
-
-    return cells
-
-
-def infer_semantic_types(notebook_path: str) -> None:
-    """Analyze DataFrames for semantic type issues and insert fix cells."""
-    nb = read_notebook(notebook_path)
-
-    # Extract metadata from profiling outputs
-    metadata = _extract_dataframe_metadata(nb)
-
-    if not metadata:
-        raise ValueError("No profiling outputs found. Run profile_dataframe() first and execute the cells.")
-
-    # Infer semantic types
-    findings, normalization_needed, column_mapping = _infer_from_metadata(metadata)
-
-    # Print report to console
+def print_semantic_report(findings: dict, normalization: dict, column_mapping: dict) -> None:
+    """Print formatted console report of semantic type analysis."""
     print("\n" + "="*80)
     print("SEMANTIC TYPE ANALYSIS REPORT")
     print("="*80)
@@ -633,12 +435,12 @@ def infer_semantic_types(notebook_path: str) -> None:
     else:
         print("\nNo type conversion issues detected")
 
-    if normalization_needed:
+    if normalization:
         print("\nCOLUMN NAME NORMALIZATION RECOMMENDATIONS")
         print("-" * 80)
-        for df_name in sorted(normalization_needed.keys()):
+        for df_name in sorted(normalization.keys()):
             print(f"\nDataFrame: {df_name}")
-            for original, normalized in normalization_needed[df_name].items():
+            for original, normalized in normalization[df_name].items():
                 print(f"  - {original} -> {normalized}")
     else:
         print("\nColumn names are already normalized")
@@ -654,19 +456,31 @@ def infer_semantic_types(notebook_path: str) -> None:
 
     print("\n" + "="*80 + "\n")
 
-    # Generate and insert fix code
-    df_names = list(metadata.keys())
-    fix_codes = _generate_fix_code(findings, normalization_needed, df_names)
 
-    if fix_codes:
-        cells_to_insert = [{"code": code, "type": "code"} for code in fix_codes]
-        insert_cells_batch(notebook_path, cells_to_insert)
-        print(f"Added {len(cells_to_insert)} fix code cells to notebook")
-    else:
-        print("No fixes needed - notebook looks good!")
+def infer_semantic_types(notebook_path: str) -> dict:
+    """Analyze DataFrames for semantic type issues. Returns structured findings dict.
 
-def sense_check(): 
-    return
+    Returns:
+        dict with keys:
+            - findings: Type conversion issues per DataFrame/column
+            - normalization: Column renaming mappings
+            - column_mapping: Shared columns across DataFrames
+            - metadata: Row counts, dtypes, unique counts
+    """
+    nb = read_notebook(notebook_path)
 
-def generate_report(): 
-    return
+    # Extract metadata from profiling outputs
+    metadata = _extract_dataframe_metadata(nb)
+
+    if not metadata:
+        raise ValueError("No profiling outputs found. Run profile_dataframe() first and execute the cells.")
+
+    # Infer semantic types
+    findings, normalization_needed, column_mapping = _infer_from_metadata(metadata)
+
+    return {
+        'findings': findings,
+        'normalization': normalization_needed,
+        'column_mapping': column_mapping,
+        'metadata': metadata
+    }
