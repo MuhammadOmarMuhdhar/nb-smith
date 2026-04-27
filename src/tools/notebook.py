@@ -74,11 +74,7 @@ def read_notebook(path: str) -> dict:
         text=True,
     )
     if result.returncode != 0:
-        try:
-            upgrade_notebook(path)
-            return read_notebook(path)
-        except Exception:
-            raise RuntimeError(f"Failed to read notebook: {result.stderr}")
+        raise RuntimeError(f"Failed to read notebook: {result.stderr}")
     return json.loads(result.stdout)
 
 def create_notebook(path: str, force: bool = False) -> dict:
@@ -112,6 +108,29 @@ def save_notebook(nb: dict, path: str, create_backup: bool = False) -> None:
         backup_path = path.with_name(f"{path.stem}.backup_{timestamp}.ipynb")
         shutil.copy2(path, backup_path)
         print(f"Backup created: {backup_path}")
+
+    # Ensure all required nbformat v4.5 fields are present
+    nb.setdefault('nbformat', 4)
+    nb.setdefault('nbformat_minor', 5)
+    nb.setdefault('metadata', {})
+    nb.setdefault('cells', [])
+
+    # Ensure nbformat is v4.5 for cell ID support
+    nb['nbformat'] = 4
+    nb['nbformat_minor'] = 5
+
+    # Sanitize cells - remove non-standard properties
+    for cell in nb.get('cells', []):
+        # Only keep valid nbformat properties
+        if cell.get('cell_type') == 'code':
+            valid_keys = {'cell_type', 'execution_count', 'metadata', 'outputs', 'source', 'id'}
+        else:  # markdown or raw
+            valid_keys = {'cell_type', 'metadata', 'source', 'id'}
+
+        # Remove any extra properties
+        extra_keys = set(cell.keys()) - valid_keys
+        for key in extra_keys:
+            del cell[key]
 
     # Use nbformat for proper validation and writing
     try:

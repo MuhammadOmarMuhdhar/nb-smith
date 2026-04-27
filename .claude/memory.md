@@ -97,3 +97,36 @@ nb-smith forge <notebook>   # All phases sequentially
 - **Don't read .ipynb files** to save tokens (mentioned by user)
 - Keep automation balanced with user control (data integrity critical)
 - Metallurgy theme is fun but don't let it constrain practical design
+
+## Critical Bug Fixes Applied (2026-04-26)
+
+### Notebook Deletion Bug - FIXED
+**Issue**: `execute_notebook()` was sometimes deleting/corrupting notebooks during execution failures.
+
+**Root Cause**: Error handlers in `read_notebook()` and `execute_notebook()` were auto-calling `upgrade_notebook()` on ANY failure, which would overwrite the notebook file even when the error was unrelated to format versions (e.g., kernel errors, execution timeouts).
+
+**Fix**: Removed all automatic upgrade calls from error handlers. Functions now raise clear exceptions without modifying files. `upgrade_notebook()` remains available for explicit user calls only.
+
+### Notebook Version Compatibility - FIXED
+**Issues**:
+1. Cells had `id` fields (requires nbformat v4.5) but notebooks were v4.2
+2. nb-cli adds non-standard `index` property to cells, causing validation failures
+3. Missing required `metadata` field in notebook dict
+
+**Fixes Applied** (src/tools/notebook.py:100-144):
+- `save_notebook()` now enforces nbformat v4.5 for all notebooks
+- Ensures all required fields exist: `metadata`, `cells`, `nbformat`, `nbformat_minor`
+- **Cell sanitization**: Removes non-standard properties (like `index`) before validation
+- Only allows valid nbformat properties per cell type:
+  - Code cells: `cell_type`, `execution_count`, `metadata`, `outputs`, `source`, `id`
+  - Markdown/raw: `cell_type`, `metadata`, `source`, `id`
+
+**Result**: Notebooks now save cleanly without validation warnings or fallback to JSON. No more data loss.
+
+### Module Reload Required
+After updating notebook.py, active Python sessions need to reload:
+```python
+import importlib
+import tools.notebook
+importlib.reload(tools.notebook)
+```
