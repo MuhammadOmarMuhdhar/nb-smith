@@ -77,7 +77,7 @@ def generate_changes_report(findings: dict, normalization: dict) -> str:
     Returns:
         Markdown formatted string documenting changes
     """
-    lines = ["# 🔧 Data Transformations Applied", ""]
+    lines = ["## Data Transformations Applied", ""]
 
     # Count changes
     total_normalizations = sum(len(renames) for renames in normalization.values())
@@ -98,16 +98,16 @@ def generate_changes_report(findings: dict, normalization: dict) -> str:
 
     # Type conversions section
     if findings:
-        lines.append("## Type Conversions")
+        lines.append("### Type Conversions")
         lines.append("")
 
         # Group by issue type for cleaner reporting
         issue_labels = {
-            'date_as_string': '📅 Date Conversions',
-            'numeric_as_string': '🔢 Numeric Conversions',
-            'boolean_as_string': '✓ Boolean Conversions',
-            'should_be_categorical': '🏷️  Categorical Conversions',
-            'identifier_column': '🔑 Identifier Columns (no change)'
+            'date_as_string': 'Date Conversions',
+            'numeric_as_string': 'Numeric Conversions',
+            'boolean_as_string': 'Boolean Conversions',
+            'should_be_categorical': 'Categorical Conversions',
+            'identifier_column': 'Identifier Columns (no change)'
         }
 
         for df_name in sorted(findings.keys()):
@@ -146,19 +146,7 @@ def generate_fix_code(findings: dict, normalization: dict) -> list[dict]:
         List of cell dicts with 'code' and 'type' keys
     """
     cells = []
-
-    # Cell 0: Markdown report (if there are any changes)
-    if findings or normalization:
-        report = generate_changes_report(findings, normalization)
-        cells.append({"code": report, "type": "markdown"})
-
-    # Cell 1: Column name normalization
-    if normalization:
-        norm_lines = ["# Apply Column Name Normalization\n"]
-        for df_name, renames in normalization.items():
-            norm_lines.append(normalize_column_names(df_name, renames))
-        norm_lines.append(f"\nprint('Normalized column names in {len(normalization)} DataFrames')")
-        cells.append({"code": '\n'.join(norm_lines), "type": "code"})
+    
 
     # Cell 2: Type conversions
     if findings:
@@ -208,8 +196,20 @@ def generate_fix_code(findings: dict, normalization: dict) -> list[dict]:
                 for col in id_cols:
                     conv_lines.append(f"# {df_name}['{col}'] - kept as-is")
 
-        conv_lines.append(f"\nprint('Applied type conversions')")
+        conv_lines.append(f"\nprint({df_name}.info())" )
         cells.append({"code": '\n'.join(conv_lines), "type": "code"})
+
+     # Cell 1: Column name normalization
+    if normalization:
+        norm_lines = ["# Apply Column Name Normalization\n"]
+        for df_name, renames in normalization.items():
+            norm_lines.append(normalize_column_names(df_name, renames))
+        norm_lines.append(f"\nprint('Normalized column names in {len(normalization)} DataFrames')")
+        cells.append({"code": '\n'.join(norm_lines), "type": "code"})
+
+    if findings or normalization:
+            report = generate_changes_report(findings, normalization)
+            cells.append({"code": report, "type": "markdown"})
 
     return cells
 
@@ -233,6 +233,6 @@ def apply_fixes(notebook_path: str, findings: dict, normalization: dict) -> None
         markdown_cells = sum(1 for c in cells_to_insert if c['type'] == 'markdown')
         code_cells = sum(1 for c in cells_to_insert if c['type'] == 'code')
 
-        print(f"✓ Added {len(cells_to_insert)} cells to notebook ({markdown_cells} markdown, {code_cells} code)")
+        print(f"Added {len(cells_to_insert)} cells to notebook ({markdown_cells} markdown, {code_cells} code)")
     else:
         print("No fixes needed - notebook looks good!")

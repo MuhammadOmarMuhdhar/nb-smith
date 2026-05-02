@@ -21,6 +21,8 @@ import uuid
 import nbformat                                                                                      
 from pathlib import Path                                                                             
 from typing import Dict, Any 
+import re
+
 
 PANDAS_READERS = {
     ".csv":      "csv",
@@ -213,11 +215,9 @@ def profile_dataframe(notebook_path: str, df_name: str = None) -> None:
 
 
 def _parse_info_output(output_text: str) -> dict:
-    """Parse .info() output to extract column names and dtypes."""
     columns = {}
     lines = output_text.split('\n')
 
-    # Find the data columns section
     in_columns = False
     for line in lines:
         if 'Data columns' in line:
@@ -226,14 +226,15 @@ def _parse_info_output(output_text: str) -> dict:
         if in_columns and '---' in line:
             continue
         if in_columns:
-            # Parse lines like: " 0   id           1000 non-null   int64"
-            parts = line.split()
-            if len(parts) >= 4:
-                col_name = parts[1]
-                dtype = parts[-1]
-                columns[col_name] = dtype
-            elif not line.strip():
+            if not line.strip():
                 break
+
+            # Match: index, column name (possibly with spaces), count, dtype
+            match = re.match(r'\s*\d+\s+(.*?)\s+\d+\s+non-null\s+(\S+)', line)
+            if match:
+                col_name = match.group(1)
+                dtype = match.group(2)
+                columns[col_name] = dtype
 
     return columns
 

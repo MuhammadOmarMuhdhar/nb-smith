@@ -209,3 +209,5 @@ __marimo__/
 # testing
 tests/
 .claude/
+AGENTS.md
+.claude/memory.md
