@@ -6,3 +6,7 @@ Pipeline Synthesis (Prep)
 - Sequential cells with asserts + final "ready dataset" summary
 """
 
+
+def build_pipeline(*args, **kwargs):
+    """Stub for pipeline synthesis. Not yet implemented."""
+    raise NotImplementedError("Pipeline synthesis is not yet implemented.")

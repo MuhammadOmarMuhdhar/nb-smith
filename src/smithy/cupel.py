@@ -1,22 +1,27 @@
 """
 Deep Diagnostics (Auditing)
 
-- Missingness: %NaNs, MCAR/MAR hints (null corr w/other cols), pattern flags
+- Missingness: %NaNs, MCAR/MAR hints, pattern flags
 - Outliers: IQR/Z-score rules
-- Duplicates, high-cardinality, skew, target leakage (corr>0.9)
-- Output: issue table (type|col|severity|fix_snippet) + asserts
+- Duplicates, high-cardinality, skew
+- Output: standardized severity sentences + diagnostic tags
 """
 
-import textwrap
-from tools.notebook import (create_notebook,
-                            insert_cell,
-                            read_notebook,
-                            insert_cells_batch,
-                            find_dataframe_cells)
+from smithy._shared import (
+    dedent_block,
+    insert_analysis_cells,
+    resolve_df_names,
+)
 
-def _generate_profile_code() -> str:
-    """Generate profiling code for a DataFrame including MCAR/MAR/MNAR logic."""
-    return textwrap.dedent("""
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Missingness
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _generate_missingness_code() -> str:
+    """Generate missingness analysis helper code for notebook cells."""
+    return dedent_block("""
         import numpy as np
         import pandas as pd
         from scipy.stats import mannwhitneyu, chi2_contingency
@@ -31,11 +36,11 @@ def _generate_profile_code() -> str:
         MIN_GROUP_SIZE = 30
         ALPHA = 0.05
 
-        def print_section(title):
+        def _missingness_print_section(title):
             line = "=" * 70
             print(f"\\n{line}\\n{title}\\n{line}")
 
-        def summarize_missingness(df):
+        def _missingness_summarize(df):
             missing_counts = df.isnull().sum()
             missing_percent = (missing_counts / len(df)) * 100
             summary = pd.DataFrame({
@@ -43,14 +48,14 @@ def _generate_profile_code() -> str:
                 "Missing %": missing_percent.round(2),
                 "Entirely Missing": missing_counts == len(df),
             }).sort_values("Missing %", ascending=False)
-            print_section("Missingness Summary")
+            _missingness_print_section("Missingness Summary")
             print(summary)
             return summary
 
-        def fully_missing_cols(df):
+        def _missingness_fully_missing(df):
             return set(df.columns[df.isnull().all()])
 
-        def run_mcar_test(df):
+        def _missingness_mcar(df):
             numeric_df = df.select_dtypes(include=[np.number])
             if not HAS_MCAR:
                 return None, "pyampute not installed"
@@ -59,19 +64,19 @@ def _generate_profile_code() -> str:
             if numeric_df.isnull().sum().sum() == 0:
                 return None, "no missing values in numeric columns"
 
-            warn = " (numeric only — categoricals excluded)" if (
+            note = " (numeric only — categoricals excluded)" if (
                 df.shape[1] > numeric_df.shape[1]
             ) else ""
 
             try:
                 p = MCARTest().little_mcar_test(numeric_df)
-                print_section(f"Little's MCAR Test{warn}")
+                _missingness_print_section(f"Little's MCAR Test{note}")
                 print(f"p-value: {p:.6f}")
                 return p, "ok"
             except Exception as e:
                 return None, f"test failed: {e}"
 
-        def collect_mar_pvalues(df, missing_mask, cols_with_na, skip_cols):
+        def _missingness_collect_mar(df, missing_mask, cols_with_na, skip_cols):
             numeric_cols = df.select_dtypes(include=[np.number]).columns
             categorical_cols = df.select_dtypes(include=["object", "category"]).columns
             records = []
@@ -110,13 +115,13 @@ def _generate_profile_code() -> str:
 
             return records
 
-        def detect_mar(df, cols_with_na, skip_cols):
-            print_section("MAR Analysis (with multiple-testing correction)")
+        def _missingness_detect_mar(df, cols_with_na, skip_cols):
+            _missingness_print_section("MAR Analysis (with multiple-testing correction)")
             missing_mask = df.isnull().astype(int)
-            records = collect_mar_pvalues(df, missing_mask, cols_with_na, skip_cols)
+            records = _missingness_collect_mar(df, missing_mask, cols_with_na, skip_cols)
 
             if not records:
-                print("No testable pairs found — check group sizes.")
+                print("No testable pairs found (insufficient group sizes).")
                 return set()
 
             p_raw = [r["p_raw"] for r in records]
@@ -126,7 +131,7 @@ def _generate_profile_code() -> str:
             for r, rej, pc in zip(records, reject, p_corrected):
                 if rej:
                     mar_detected.add(r["target"])
-                    print(f"[MAR] '{r['target']}' ~ '{r['feature']}' "
+                    print(f"MAR: '{r['target']}' ~ '{r['feature']}' "
                           f"({r['test']}, p_corrected={pc:.4f})")
 
             if not mar_detected:
@@ -134,64 +139,53 @@ def _generate_profile_code() -> str:
             return mar_detected
 
         def analyze_missingness(df, name="DataFrame"):
-            print_section(f"Missingness Analysis: {name}")
-            summarize_missingness(df)
+            _missingness_print_section(f"Missingness Analysis: {name}")
+            _missingness_summarize(df)
 
-            skip = fully_missing_cols(df)
+            skip = _missingness_fully_missing(df)
             if skip:
-                print(f"\\n[Warning] Entirely missing — excluded from MAR/MNAR: {skip}")
+                print(f"\\nEntirely missing — excluded from MAR/MNAR: {skip}")
 
             cols_with_na = df.columns[df.isnull().any() & ~df.columns.isin(skip)]
             if cols_with_na.empty:
-                print("\\n[Conclusion] No partial missingness found.")
+                print("\\nNo partial missingness found.")
                 return
 
-            mcar_p, note = run_mcar_test(df)
+            mcar_p, note = _missingness_mcar(df)
 
             if mcar_p is not None and mcar_p >= ALPHA:
-                print(f"\\n[Conclusion] Data may be MCAR (p={mcar_p:.4f}).")
+                print(f"\\nMCAR: p = {mcar_p:.4f}")
                 return
 
             if mcar_p is None:
-                print(f"\\n[MCAR] Unavailable: {note}. Proceeding with MAR analysis.")
+                print(f"\\nMCAR unavailable: {note}")
             else:
-                print(f"\\n[Conclusion] Likely NOT MCAR (p={mcar_p:.4f}). Running MAR analysis.")
+                print(f"\\nMCAR: p = {mcar_p:.4f}")
 
-            mar_detected = detect_mar(df, cols_with_na, skip_cols=skip)
+            mar_detected = _missingness_detect_mar(df, cols_with_na, skip_cols=skip)
             mnar_candidates = set(cols_with_na) - mar_detected
 
             if mnar_candidates:
-                print_section("MNAR Candidates")
+                _missingness_print_section("MNAR Candidates")
                 for col in mnar_candidates:
-                    print(f"[MNAR?] '{col}' — no MCAR/MAR pattern. Inspect domain context.")
-    """).strip()
+                    print(f"MNAR: '{col}' — no significant associations detected.")
+    """)
 
 
-def analyze_missingness(notebook_path: str, df_name: str = None):
-    nb = read_notebook(notebook_path)
+def analyze_missingness(notebook_path: str, df_name: str | None = None) -> None:
+    """Add missingness analysis cells to a notebook."""
+    df_names = resolve_df_names(notebook_path, df_name)
+    insert_analysis_cells(notebook_path, df_names, _generate_missingness_code, "missingness")
 
-    if df_name:
-        df_names = [df_name]
-    else:
-        df_cells = find_dataframe_cells(nb)
-        df_names = [name for _, name in df_cells if name and name not in ('null_df', 'unique_counts')]
 
-    if not df_names:
-        raise ValueError("No DataFrames found in notebook")
+# ═══════════════════════════════════════════════════════════════════════════════
+# Outliers
+# ═══════════════════════════════════════════════════════════════════════════════
 
-    insert_cell(notebook_path, _generate_profile_code(), cell_type='code')
-
-    cells_to_insert = [
-        {"code": f"analyze_missingness({df}, name='{df}')", "type": "code"}
-        for df in df_names
-    ]
-
-    insert_cells_batch(notebook_path, cells_to_insert)
-    print(f"Added {len(cells_to_insert)} profile cells")
 
 def _generate_outlier_code() -> str:
-    """Generate profiling code for outlier detection using IQR and Z-score."""
-    return textwrap.dedent("""
+    """Generate outlier analysis helper code for notebook cells."""
+    return dedent_block("""
         import numpy as np
         import pandas as pd
 
@@ -199,42 +193,26 @@ def _generate_outlier_code() -> str:
         ALPHA_IQR_EXTREME = 3.0
         ZSCORE_THRESHOLD = 3.0
 
-        def print_section(title):
+        def _outlier_print_section(title):
             line = "=" * 70
             print(f"\\n{line}\\n{title}\\n{line}")
 
-        def _severity_sentence(iqr_result, zscore_result):
-            \"\"\"Generate a one-sentence summary from outlier counts.\"\"\""
+        def _outlier_summary(iqr_result):
             mild = iqr_result["mild_count"]
             extreme = iqr_result["extreme_count"]
-            total_rows = iqr_result["total_rows"]
-            pct_mild = (mild / total_rows * 100) if total_rows else 0
-            pct_extreme = (extreme / total_rows * 100) if total_rows else 0
-
             if mild == 0 and extreme == 0:
-                return "low — no outliers detected, distribution appears normal"
-
-            if pct_extreme > 1 or pct_mild > 5:
-                tail = ""
-                if iqr_result["mild_upper"] > iqr_result["mild_lower"]:
-                    tail = "heavy-tailed with extreme upper values"
-                elif iqr_result["mild_lower"] > iqr_result["mild_upper"]:
-                    tail = "heavy-tailed with extreme lower values"
-                else:
-                    tail = "heavy-tailed on both ends"
-                return f"high — {pct_mild:.1f}% of rows flagged, possible data quality issue or {tail}"
-
+                return "0 outliers"
             upper = iqr_result["mild_upper"]
             lower = iqr_result["mild_lower"]
             if upper > lower:
-                return "moderate — right-skewed with long upper tail, inspect extreme values"
+                tail = "upper tail"
             elif lower > upper:
-                return "moderate — left-skewed with long lower tail, inspect extreme values"
+                tail = "lower tail"
             else:
-                return "moderate — outliers present on both tails, inspect distribution"
+                tail = "both tails"
+            return f"{mild} mild, {extreme} extreme ({tail})"
 
-        def iqr_outliers(series, col_name):
-            \"\"\"Detect mild and extreme outliers using IQR.\"\"\""
+        def _outlier_iqr(series, col_name):
             s = series.dropna()
             total_rows = len(series)
 
@@ -271,8 +249,7 @@ def _generate_outlier_code() -> str:
                 }
             }
 
-        def zscore_outliers(series, col_name):
-            \"\"\"Detect outliers using classic mean/std Z-score.\"\"\""
+        def _outlier_zscore(series, col_name):
             s = series.dropna()
             total_rows = len(series)
 
@@ -289,14 +266,14 @@ def _generate_outlier_code() -> str:
             }
 
         def analyze_outliers(df, name="DataFrame"):
-            print_section(f"Outlier Analysis: {name}")
+            _outlier_print_section(f"Outlier Analysis: {name}")
 
             numeric_cols = df.select_dtypes(include=[np.number]).columns
             other_cols = [c for c in df.columns if c not in numeric_cols]
 
             for col in numeric_cols:
-                iqr = iqr_outliers(df[col], col)
-                z = zscore_outliers(df[col], col)
+                iqr = _outlier_iqr(df[col], col)
+                z = _outlier_zscore(df[col], col)
                 total = iqr["total_rows"]
 
                 print(f"\\n--- Column: {col} (numeric) ---")
@@ -317,51 +294,211 @@ def _generate_outlier_code() -> str:
                     pct_z = z["outlier_count"] / total * 100
                     print(f"Z-score: {z['outlier_count']} outliers ({pct_z:.1f}%), max |z| = {z['max_z']:.2f}")
 
-                severity = _severity_sentence(iqr, z)
-                print(f"Severity: {severity}")
+                print(f"Summary: {_outlier_summary(iqr)}")
 
             for col in other_cols:
-                print(f"\\n--- Column: {col} ({df[col].dtype}) ---")
+                print(f"\n--- Column: {col} ({df[col].dtype}) ---")
                 print("Skipped: non-numeric column")
-    """).strip()
+    """)
 
 
-def analyze_outliers(notebook_path: str, df_name: str = None):
+def analyze_outliers(notebook_path: str, df_name: str | None = None) -> None:
     """Add outlier analysis cells to a notebook."""
-    nb = read_notebook(notebook_path)
-
-    if df_name:
-        df_names = [df_name]
-    else:
-        df_cells = find_dataframe_cells(nb)
-        df_names = [name for _, name in df_cells if name and name not in ('null_df', 'unique_counts')]
-
-    if not df_names:
-        raise ValueError("No DataFrames found in notebook")
-
-    insert_cell(notebook_path, _generate_outlier_code(), cell_type='code')
-
-    cells_to_insert = [
-        {"code": f"analyze_outliers({df}, name='{df}')", "type": "code"}
-        for df in df_names
-    ]
-
-    insert_cells_batch(notebook_path, cells_to_insert)
-    print(f"Added {len(cells_to_insert)} outlier analysis cells")
+    df_names = resolve_df_names(notebook_path, df_name)
+    insert_analysis_cells(
+        notebook_path,
+        df_names,
+        _generate_outlier_code,
+        "outlier",
+        call_template="analyze_outliers({df}, name='{df}')",
+    )
 
 
-def analyze_duplicates():
-    return
+# ═══════════════════════════════════════════════════════════════════════════════
+# Duplicates
+# ═══════════════════════════════════════════════════════════════════════════════
 
 
-def analyze_cardinality():
-    return
+def _generate_duplicate_code() -> str:
+    """Generate duplicate analysis helper code for notebook cells."""
+    return dedent_block("""
+        import numpy as np
+        import pandas as pd
+        from scipy.stats import mannwhitneyu, chi2_contingency
+
+        ALPHA = 0.05
+
+        def _duplicate_print_section(title):
+            line = "=" * 70
+            print(f"\\n{line}\\n{title}\\n{line}")
+
+        def _duplicate_summary(dup_count, dup_pct):
+            if dup_count == 0:
+                return "0 duplicates"
+            return f"{dup_count} duplicates ({dup_pct:.2f}%)"
+
+        def analyze_duplicates(df, name="DataFrame"):
+            _duplicate_print_section(f"Duplicate Analysis: {name}")
+
+            total = len(df)
+            dup_mask_extra = df.duplicated(keep="first")
+            dup_count = int(dup_mask_extra.sum())
+            dup_pct = (dup_count / total * 100) if total else 0
+
+            print(f"\\nTotal rows: {total}")
+            print(f"Duplicate rows (keep='first'): {dup_count} ({dup_pct:.2f}%)")
+
+            if dup_count > 0:
+                is_dup = df.duplicated(keep=False).astype(int)
+                numeric_cols = df.select_dtypes(include=[np.number]).columns
+                categorical_cols = df.select_dtypes(include=["object", "category"]).columns
+                sig_assocs = []
+
+                for col in numeric_cols:
+                    grp_dup = df.loc[is_dup == 1, col].dropna()
+                    grp_unique = df.loc[is_dup == 0, col].dropna()
+                    if len(grp_dup) < 5 or len(grp_unique) < 5:
+                        continue
+                    try:
+                        _, p = mannwhitneyu(grp_dup, grp_unique, alternative="two-sided")
+                        if p < ALPHA:
+                            mean_dup = grp_dup.mean()
+                            mean_unique = grp_unique.mean()
+                            sig_assocs.append({
+                                "col": col, "type": "numeric",
+                                "test": "mannwhitney", "p": p,
+                                "note": (f"distribution difference in '{col}' "
+                                         f"(dup mean={mean_dup:.2f}, unique mean={mean_unique:.2f})")
+                            })
+                    except Exception:
+                        pass
+
+                for col in categorical_cols:
+                    try:
+                        contingency = pd.crosstab(is_dup, df[col])
+                        if contingency.shape[1] < 2:
+                            continue
+                        _, p, _, _ = chi2_contingency(contingency)
+                        if p < ALPHA:
+                            rates = {}
+                            for cat in df[col].dropna().unique():
+                                mask_cat = df[col] == cat
+                                n_cat = mask_cat.sum()
+                                n_dup_cat = (is_dup[mask_cat] == 1).sum()
+                                rates[cat] = (n_dup_cat / n_cat * 100) if n_cat else 0
+                            top_rate = max(rates.items(), key=lambda x: x[1])
+                            sig_assocs.append({
+                                "col": col, "type": "categorical",
+                                "test": "chi2", "p": p,
+                                "note": (f"association with '{col}' "
+                                         f"(highest rate: '{top_rate[0]}'={top_rate[1]:.1f}% dup)")
+                            })
+                    except Exception:
+                        pass
+
+                if sig_assocs:
+                    print(f"\nAssociations with duplicates:")
+                    for assoc in sorted(sig_assocs, key=lambda x: x['p']):
+                        print(f"  {assoc['type']}: {assoc['note']} (p={assoc['p']:.4f})")
+
+            print(f"\n{_duplicate_summary(dup_count, dup_pct)}")
+    """)
 
 
-def analyze_skew():
-    return
+def analyze_duplicates(notebook_path: str, df_name: str | None = None) -> None:
+    """Add duplicate analysis cells to a notebook."""
+    df_names = resolve_df_names(notebook_path, df_name)
+    insert_analysis_cells(notebook_path, df_names, _generate_duplicate_code, "duplicates")
 
 
-def generate_report():
-    return
+# ═══════════════════════════════════════════════════════════════════════════════
+# Cardinality
+# ═══════════════════════════════════════════════════════════════════════════════
 
+
+def _generate_cardinality_code() -> str:
+    """Generate cardinality analysis helper code for notebook cells."""
+    return dedent_block("""
+        import pandas as pd
+
+        def _cardinality_print_section(title):
+            line = "=" * 70
+            print(f"\\n{line}\\n{title}\\n{line}")
+
+        def analyze_cardinality(df, name="DataFrame"):
+            _cardinality_print_section(f"Cardinality Analysis: {name}")
+
+            total = len(df)
+            print(f"\nTotal rows: {total}")
+            print(f"{'Column':<20} {'Distinct':>8} {'Distinct %':>10}")
+            print("-" * 60)
+
+            records = []
+            for col in df.columns:
+                n_unique = df[col].nunique(dropna=False)
+                pct_unique = (n_unique / total * 100) if total else 0
+                records.append({
+                    "Column": col,
+                    "Distinct": n_unique,
+                    "Distinct %": round(pct_unique, 2),
+                })
+
+            for r in sorted(records, key=lambda x: x["Distinct %"], reverse=True):
+                print(f"{r['Column']:<20} {r['Distinct']:>8} {r['Distinct %']:>10.2f}")
+    """)
+
+
+def analyze_cardinality(notebook_path: str, df_name: str | None = None) -> None:
+    """Add cardinality analysis cells to a notebook."""
+    df_names = resolve_df_names(notebook_path, df_name)
+    insert_analysis_cells(notebook_path, df_names, _generate_cardinality_code, "cardinality")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Skew
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _generate_skew_code() -> str:
+    """Generate skewness analysis helper code for notebook cells."""
+    return dedent_block("""
+        import numpy as np
+        import pandas as pd
+        from scipy.stats import skew
+
+        def _skew_print_section(title):
+            line = "=" * 70
+            print(f"\\n{line}\\n{title}\\n{line}")
+
+        def _skew_label(skew_val):
+            direction = "right" if skew_val > 0 else "left"
+            if abs(skew_val) < 0.5:
+                return f"skew = {skew_val:.2f}"
+            return f"skew = {skew_val:.2f} ({direction})"
+
+        def analyze_skew(df, name="DataFrame"):
+            _skew_print_section(f"Skew Analysis: {name}")
+
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) == 0:
+                print("No numeric columns found.")
+                return
+
+            print(f"{'Column':<20} {'Skew':>10}")
+            print("-" * 40)
+
+            for col in numeric_cols:
+                s = df[col].dropna()
+                if s.empty or s.nunique() <= 1:
+                    print(f"{col:<20} {'—':>10}  constant or empty — skipped")
+                    continue
+
+                sk = skew(s, bias=False)
+                print(f"{col:<20} {sk:>10.2f}  {_skew_label(sk)}")
+    """)
+
+
+def analyze_skew(notebook_path: str, df_name: str | None = None) -> None:
+    """Add skewness analysis cells to a notebook."""
+    df_names = resolve_df_names(notebook_path, df_name)
+    insert_analysis_cells(notebook_path, df_names, _generate_skew_code, "skew")
