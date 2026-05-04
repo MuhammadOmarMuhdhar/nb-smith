@@ -297,7 +297,7 @@ def _generate_outlier_code() -> str:
                 print(f"Summary: {_outlier_summary(iqr)}")
 
             for col in other_cols:
-                print(f"\n--- Column: {col} ({df[col].dtype}) ---")
+                print(f"\\n--- Column: {col} ({df[col].dtype}) ---")
                 print("Skipped: non-numeric column")
     """)
 
@@ -397,11 +397,11 @@ def _generate_duplicate_code() -> str:
                         pass
 
                 if sig_assocs:
-                    print(f"\nAssociations with duplicates:")
+                    print(f"\\nAssociations with duplicates:")
                     for assoc in sorted(sig_assocs, key=lambda x: x['p']):
                         print(f"  {assoc['type']}: {assoc['note']} (p={assoc['p']:.4f})")
 
-            print(f"\n{_duplicate_summary(dup_count, dup_pct)}")
+            print(f"\\n{_duplicate_summary(dup_count, dup_pct)}")
     """)
 
 
@@ -429,7 +429,7 @@ def _generate_cardinality_code() -> str:
             _cardinality_print_section(f"Cardinality Analysis: {name}")
 
             total = len(df)
-            print(f"\nTotal rows: {total}")
+            print(f"\\nTotal rows: {total}")
             print(f"{'Column':<20} {'Distinct':>8} {'Distinct %':>10}")
             print("-" * 60)
 
